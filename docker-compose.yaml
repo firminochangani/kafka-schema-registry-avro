@@ -1,0 +1,241 @@
+# 3 brokers + 1 dedicated KRaft controller.
+#
+# Why a dedicated controller instead of 3 combined nodes:
+#   Experiment 4 ("make the topic unwritable") requires stopping 2 of 3 brokers.
+#   With 3 combined nodes that also kills 2 of 3 controllers, so the Raft quorum is
+#   lost and the whole cluster dies -- you would be observing a metadata outage, not
+#   NOT_ENOUGH_REPLICAS. Splitting the roles keeps the control plane alive so the
+#   data-plane failure is the only variable.
+#   Trade-off: a single controller is a SPOF and is not what you would run in
+#   production (there you want 3 or 5 controllers). Here it is a measuring rig.
+
+x-broker-common: &broker-common
+  image: apache/kafka:latest
+  # The image runs as appuser(1000), but Docker creates named-volume mountpoints
+  # owned by root. Running as root is the least-friction fix for a local rig.
+  user: root
+  environment: &broker-env
+    CLUSTER_ID: "kafka-cdc-debezium-postgres"
+
+    KAFKA_PROCESS_ROLES: broker
+    KAFKA_CONTROLLER_QUORUM_VOTERS: "0@controller:9093"
+    KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+    KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT"
+    KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+    KAFKA_LOG_DIRS: /opt/kafka/data
+
+    # Cluster requirements from the README.
+    KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "3"
+    KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "3"
+    KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "2"
+    KAFKA_DEFAULT_REPLICATION_FACTOR: "3"
+    KAFKA_MIN_INSYNC_REPLICAS: "2"
+    KAFKA_UNCLEAN_LEADER_ELECTION_ENABLE: "false"
+
+    # Off on purpose: an accidental auto-created topic would come up with the
+    # broker defaults and silently contaminate an experiment.
+    KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    KAFKA_NUM_PARTITIONS: "3"
+    KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+
+    # Default is 30000. Lower it if you get bored waiting for the ISR to shrink
+    # during failure experiments -- but record which value produced your numbers.
+    KAFKA_REPLICA_LAG_TIME_MAX_MS: "30000"
+  healthcheck:
+    test: ["CMD", "/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:19092"]
+    interval: 10s
+    timeout: 10s
+    retries: 12
+    start_period: 20s
+  depends_on:
+    controller:
+      condition: service_started
+
+services:
+  controller:
+    image: apache/kafka:latest
+    container_name: controller
+    user: root
+    environment:
+      CLUSTER_ID: "kafka-cdc-debezium-postgres"
+      KAFKA_NODE_ID: "0"
+      KAFKA_PROCESS_ROLES: controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "0@controller:9093"
+      KAFKA_LISTENERS: "CONTROLLER://:9093"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LOG_DIRS: /opt/kafka/data
+    volumes:
+      - controller-data:/opt/kafka/data
+
+  broker1:
+    <<: *broker-common
+    container_name: broker1
+    environment:
+      <<: *broker-env
+      KAFKA_NODE_ID: "1"
+      KAFKA_LISTENERS: "INTERNAL://:19092,EXTERNAL://:9092"
+      KAFKA_ADVERTISED_LISTENERS: "INTERNAL://broker1:19092,EXTERNAL://localhost:9092"
+    ports:
+      - "9092:9092"
+    volumes:
+      - broker1-data:/opt/kafka/data
+
+  broker2:
+    <<: *broker-common
+    container_name: broker2
+    environment:
+      <<: *broker-env
+      KAFKA_NODE_ID: "2"
+      KAFKA_LISTENERS: "INTERNAL://:19092,EXTERNAL://:9092"
+      KAFKA_ADVERTISED_LISTENERS: "INTERNAL://broker2:19092,EXTERNAL://localhost:9093"
+    ports:
+      - "9093:9092"
+    volumes:
+      - broker2-data:/opt/kafka/data
+
+  broker3:
+    <<: *broker-common
+    container_name: broker3
+    environment:
+      <<: *broker-env
+      KAFKA_NODE_ID: "3"
+      KAFKA_LISTENERS: "INTERNAL://:19092,EXTERNAL://:9092"
+      KAFKA_ADVERTISED_LISTENERS: "INTERNAL://broker3:19092,EXTERNAL://localhost:9094"
+    ports:
+      - "9094:9092"
+    volumes:
+      - broker3-data:/opt/kafka/data
+
+  # Confluent Schema Registry: schemas live in the _schemas Kafka topic.
+  # Like Connect's config topics, SR creates _schemas itself through an
+  # explicit CreateTopics request, so auto.create.topics.enable=false does
+  # not apply.
+  schema-registry:
+    image: confluentinc/cp-schema-registry:8.2.4
+    container_name: schema-registry
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_LISTENERS: "http://0.0.0.0:8081"
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: "PLAINTEXT://broker1:19092,broker2:19092,broker3:19092"
+      SCHEMA_REGISTRY_KAFKASTORE_TOPIC: "_schemas"
+      # _schemas must honour the same RF/min-ISR contract as every other
+      # topic in the rig; the SR defaults (3/1) would leave min ISR at 1
+      # and the topic would stay writable during Experiment 4.
+      SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR: "3"
+      SCHEMA_REGISTRY_KAFKASTORE_MIN_INSYNC_REPLICAS: "2"
+    healthcheck:
+      test: [ "CMD-SHELL", "echo > /dev/tcp/localhost/8081" ]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+    depends_on:
+      broker1:
+        condition: service_healthy
+      broker2:
+        condition: service_healthy
+      broker3:
+        condition: service_healthy
+
+  schema-registry-ui:
+    image: landoop/schema-registry-ui
+    hostname: schema-registry-ui
+    depends_on:
+      - broker1
+      - broker2
+      - broker3
+      - schema-registry
+    ports:
+      - "8002:8000"
+    environment:
+      SCHEMAREGISTRY_URL: 'http://schema-registry:8081'
+      PROXY: "true"
+
+  dashboard:
+    image: redpandadata/console:v2.8.16 # Latest image that allows using Confluent registry
+    container_name: dashboard
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_BROKERS: "broker1:19092,broker2:19092,broker3:19092"
+      KAFKA_SCHEMAREGISTRY_ENABLED: true
+      KAFKA_SCHEMAREGISTRY_URLS: http://schema-registry:8081
+      KAFKA_SCHEMAREGISTRY_TLS_ENABLED: false
+    depends_on:
+      broker1:
+        condition: service_healthy
+      broker2:
+        condition: service_healthy
+      broker3:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:18.6
+    environment:
+      - POSTGRES_PASSWORD=password
+    # wal_level=logical enables the logical decoding Debezium reads from.
+    # The postgres default (replica) does not.
+    command: [ "postgres", "-c", "wal_level=logical" ]
+    ports:
+      - "5432:5432"
+    volumes:
+      # Debezium offsets and the replication slot are anchored to the WAL,
+      # so the data dir must survive `docker compose down` or the connector
+      # wakes up pointing at a WAL that no longer exists.
+      # 18+ requires mounting the parent dir: data lives in a
+      # major-version-specific subdirectory (/var/lib/postgresql/18/docker)
+      # and a mount at .../data is refused at startup.
+      - postgres-data:/var/lib/postgresql
+      # Runs only when the data dir is first initialized: creates the
+      # outbox table the connector captures. After a schema change:
+      # `docker compose down -v && docker compose up -d`.
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Debezium = Kafka Connect with the Postgres connector baked in.
+  # The connector itself is registered by connect-init over the REST API.
+  connect:
+    image: quay.io/debezium/connect:3.6.3
+    container_name: connect
+    ports:
+      - "8083:8083"
+    environment:
+      BOOTSTRAP_SERVERS: "broker1:19092,broker2:19092,broker3:19092"
+      GROUP_ID: "debezium-connect"
+      CONFIG_STORAGE_TOPIC: connect-configs
+      OFFSET_STORAGE_TOPIC: connect-offsets
+      STATUS_STORAGE_TOPIC: connect-statuses
+      # Created via explicit CreateTopics requests, so
+      # auto.create.topics.enable=false does not apply. RF 3 keeps them
+      # writable at the cluster's min ISR of 2.
+      CONFIG_STORAGE_REPLICATION_FACTOR: "3"
+      OFFSET_STORAGE_REPLICATION_FACTOR: "3"
+      STATUS_STORAGE_REPLICATION_FACTOR: "3"
+      # Topics Connect creates on its own (the routed work.firmino.orders
+      # and the schema-history topic) come from the default creation group.
+      # The built-in defaults (RF 1) would trip min ISR 2 and you would get
+      # NOT_ENOUGH_REPLICAS instead of a CDC stream.
+      CONNECT_TOPIC_CREATION_ENABLE: "true"
+      CONNECT_TOPIC_CREATION_DEFAULT_REPLICATION_FACTOR: "3"
+      CONNECT_TOPIC_CREATION_DEFAULT_PARTITIONS: "3"
+    depends_on:
+      broker1:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+volumes:
+  controller-data:
+  broker1-data:
+  broker2-data:
+  broker3-data:
+  postgres-data:

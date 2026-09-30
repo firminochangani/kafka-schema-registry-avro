@@ -1,0 +1,51 @@
+{
+  "type": "record",
+  "name": "OrderPlaced",
+  "doc": "This schema represents an Order placed",
+  "namespace": "work.firmino.orders",
+  "fields": [
+    {
+      "name": "id",
+      "type": "string"
+    },
+    {
+      "name": "customer_id",
+      "type": "string"
+    },
+    {
+      "name": "items",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "OrderPlacedItem",
+          "fields": [
+            {
+              "name": "product_id",
+              "type": "string"
+            },
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "price",
+              "type": "long"
+            },
+            {
+              "name": "quantity",
+              "type": "long"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "placed_at",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      }
+    }
+  ]
+}
