@@ -21,6 +21,8 @@ var _ = fmt.Printf
 type OrderPlaced struct {
 	Id string `json:"id"`
 
+	Status string `json:"status"`
+
 	Customer_id string `json:"customer_id"`
 
 	Items []OrderPlacedItem `json:"items"`
@@ -28,10 +30,11 @@ type OrderPlaced struct {
 	Placed_at int64 `json:"placed_at"`
 }
 
-const OrderPlacedAvroCRC64Fingerprint = "l\f\x8c\xa4Ⱥ\xd1\x1c"
+const OrderPlacedAvroCRC64Fingerprint = "\xd2'\x02\\@\x1b\xfd\x88"
 
 func NewOrderPlaced() OrderPlaced {
 	r := OrderPlaced{}
+	r.Status = "pending"
 	r.Items = make([]OrderPlacedItem, 0)
 
 	return r
@@ -66,6 +69,10 @@ func writeOrderPlaced(r OrderPlaced, w io.Writer) error {
 	if err != nil {
 		return err
 	}
+	err = vm.WriteString(r.Status, w)
+	if err != nil {
+		return err
+	}
 	err = vm.WriteString(r.Customer_id, w)
 	if err != nil {
 		return err
@@ -86,7 +93,7 @@ func (r OrderPlaced) Serialize(w io.Writer) error {
 }
 
 func (r OrderPlaced) Schema() string {
-	return "{\"doc\":\"This schema represents an Order placed\",\"fields\":[{\"name\":\"id\",\"type\":\"string\"},{\"name\":\"customer_id\",\"type\":\"string\"},{\"name\":\"items\",\"type\":{\"items\":{\"fields\":[{\"name\":\"product_id\",\"type\":\"string\"},{\"name\":\"name\",\"type\":\"string\"},{\"name\":\"price\",\"type\":\"long\"},{\"name\":\"quantity\",\"type\":\"long\"}],\"name\":\"OrderPlacedItem\",\"type\":\"record\"},\"type\":\"array\"}},{\"name\":\"placed_at\",\"type\":{\"logicalType\":\"timestamp-millis\",\"type\":\"long\"}}],\"name\":\"work.firmino.orders.OrderPlaced\",\"type\":\"record\"}"
+	return "{\"doc\":\"This schema represents an Order placed\",\"fields\":[{\"name\":\"id\",\"type\":\"string\"},{\"default\":\"pending\",\"name\":\"status\",\"type\":\"string\"},{\"name\":\"customer_id\",\"type\":\"string\"},{\"name\":\"items\",\"type\":{\"items\":{\"fields\":[{\"name\":\"product_id\",\"type\":\"string\"},{\"name\":\"name\",\"type\":\"string\"},{\"name\":\"price\",\"type\":\"long\"},{\"name\":\"quantity\",\"type\":\"long\"}],\"name\":\"OrderPlacedItem\",\"type\":\"record\"},\"type\":\"array\"}},{\"name\":\"placed_at\",\"type\":{\"logicalType\":\"timestamp-millis\",\"type\":\"long\"}}],\"name\":\"work.firmino.orders.OrderPlaced\",\"type\":\"record\"}"
 }
 
 func (r OrderPlaced) SchemaName() string {
@@ -110,18 +117,23 @@ func (r *OrderPlaced) Get(i int) types.Field {
 		return w
 
 	case 1:
-		w := types.String{Target: &r.Customer_id}
+		w := types.String{Target: &r.Status}
 
 		return w
 
 	case 2:
+		w := types.String{Target: &r.Customer_id}
+
+		return w
+
+	case 3:
 		r.Items = make([]OrderPlacedItem, 0)
 
 		w := ArrayOrderPlacedItemWrapper{Target: &r.Items}
 
 		return w
 
-	case 3:
+	case 4:
 		w := types.Long{Target: &r.Placed_at}
 
 		return w
@@ -132,6 +144,9 @@ func (r *OrderPlaced) Get(i int) types.Field {
 
 func (r *OrderPlaced) SetDefault(i int) {
 	switch i {
+	case 1:
+		r.Status = "pending"
+		return
 	}
 	panic("Unknown field index")
 }
@@ -155,6 +170,10 @@ func (r OrderPlaced) MarshalJSON() ([]byte, error) {
 	var err error
 	output := make(map[string]json.RawMessage)
 	output["id"], err = json.Marshal(r.Id)
+	if err != nil {
+		return nil, err
+	}
+	output["status"], err = json.Marshal(r.Status)
 	if err != nil {
 		return nil, err
 	}
@@ -193,6 +212,20 @@ func (r *OrderPlaced) UnmarshalJSON(data []byte) error {
 		}
 	} else {
 		return fmt.Errorf("no value specified for id")
+	}
+	val = func() json.RawMessage {
+		if v, ok := fields["status"]; ok {
+			return v
+		}
+		return nil
+	}()
+
+	if val != nil {
+		if err := json.Unmarshal([]byte(val), &r.Status); err != nil {
+			return err
+		}
+	} else {
+		r.Status = "pending"
 	}
 	val = func() json.RawMessage {
 		if v, ok := fields["customer_id"]; ok {

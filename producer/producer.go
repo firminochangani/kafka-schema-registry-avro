@@ -27,7 +27,6 @@ func New() *cli.Command {
 }
 
 func run(ctx context.Context, command *cli.Command) error {
-	// create a kafka client
 	kafkaClient, err := kgo.NewClient(kgo.SeedBrokers(strings.Split(os.Getenv("KAFKA_BROKER_URLS"), ",")...))
 	if err != nil {
 		return err
@@ -37,15 +36,14 @@ func run(ctx context.Context, command *cli.Command) error {
 		return err
 	}
 
-	// create a registry client
+	// Confluent schema registry
 	schemaRegistryClient, err := schemaregistry.NewClient(schemaregistry.NewConfig(os.Getenv("CONFLUENT_SCHEMA_REGISTRY")))
 	if err != nil {
 		return err
 	}
 	defer func() { _ = schemaRegistryClient.Close() }()
 
-	// initialise the serializer
-	// avro.NewGenericSerializer(schemaRegistryClient, serde.ValueSerde, avro.NewSerializerConfig())
+	// Avro serializer
 	avroConfig := avro.NewSerializerConfig()
 	avroConfig.AutoRegisterSchemas = false
 	serializer, err := avro.NewSpecificSerializer(schemaRegistryClient, serde.ValueSerde, avroConfig)
@@ -93,6 +91,7 @@ func fixtureOrderPlacedEvent() events.OrderPlaced {
 		Id:        gofakeit.UUID(),
 		Items:     items,
 		Placed_at: time.Now().Unix(),
+		// Status:    "",
 	}
 }
 

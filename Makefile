@@ -17,3 +17,6 @@ consumer:
 
 gen-schemas:
 	gogen-avro --package=events ./events ./schemas/*
+
+apply-schemas:
+	./apply-schemas.sh
