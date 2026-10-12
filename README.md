@@ -1,6 +1,6 @@
 # Kafka - Schema registry with Avro
 
-A sample project producing and consuming records using a Confluent Schema Registry and Avro.
+A sample project producing and consuming records using Confluent Schema Registry and Avro.
 
 ## Goals
 
